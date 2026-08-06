@@ -1,0 +1,135 @@
+from typing import TypedDict, Annotated
+from langchain_core.messages import BaseMessage
+import operator
+from langchain_core.tools import tool
+from app.retriever import HybridRetriever
+from ddgs import DDGS
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import ToolNode
+from app.core.config import settings
+from langgraph.graph import StateGraph, END
+from langchain_core.messages import HumanMessage
+import arxiv
+
+class AgentState(TypedDict):
+    messages : Annotated[list[BaseMessage], operator.add]
+
+
+retriever = HybridRetriever()
+web_search = DDGS()
+
+# The docstring are necessary for tool nodes as the LLm reads them to decide when to use each tool
+@tool
+def search_corpus(query: str) -> str:
+    """Search the ArXiv research paper corpus for AI/ML research concepts."""
+    try:
+        results = retriever.retrieve(query=query)
+        return "\n\n".join([
+            f"Title: {r['title']}\n{r['text']}"
+            for r in results
+        ])
+    except Exception as e:
+        return f"Corpus search failed: {e}"
+
+@tool
+def search_web(query: str) -> str:
+    """Search the web for current information not in the research corpus."""
+    try:
+        results = web_search.text(query, max_results=5)
+        return "\n\n".join([r["body"] for r in results])
+    except Exception as e:
+        return f"Web search failed: {e}"
+
+@tool
+def fetch_paper(url: str) -> str:
+    """Fetch full details of a specific ArXiv paper when you have its URL.
+    Use this when you need more detail about a paper already identified
+    through search. Do not use for general topic searches — use 
+    search_corpus instead."""
+    try:
+        paper_id = url.split("/")[-1]
+        client = arxiv.Client()
+        search = arxiv.Search(id_list=[paper_id])
+        paper = next(client.results(search))
+
+        return f"Title: {paper.title}\n\nAuthors: {', '.join([a.name for a in paper.authors])}\n\nAbstract: {paper.summary}\n\nURL: {paper.entry_id}"
+    except Exception as e:
+        return f"Paper fetch failed: {e}"
+
+
+@tool
+def summarize_papers(query: str) -> str:
+    """Retrieve and summarize papers on a topic from the ArXiv corpus.
+    Use this when the user asks to summarize, compare, or get an overview 
+    of papers on a specific topic. Not for fetching a specific paper by URL 
+    — use fetch_paper for that."""
+    try:
+        results = retriever.retrieve(query=query, k=5)
+        summaries = []
+        for r in results:
+            summaries.append(f"Title: {r['title']}\nSummary: {r['text']}")
+        return "\n\n".join(summaries)
+    except Exception as e:
+        return f"Paper summarization failed: {e}"
+
+
+# bind tools to the LLM so it knows what functions it can call
+llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    api_key= settings.OPENAI_API_KEY
+)
+tools = [search_corpus, search_web, fetch_paper, summarize_papers]
+llm_with_tools = llm.bind_tools(tools)
+
+# agent node — LLM thinks and decides: call a tool or answer
+def agent_node(state: AgentState) -> dict:
+    """LLM reads message history and decides next action."""
+    response = llm_with_tools.invoke(state['messages'])
+    return {'messages' : [response]}
+
+# tools node — executes whichever tool the agent called
+tool_node = ToolNode(tools)
+
+def should_continue(state: AgentState) -> str:
+    """Route to tools if agent made a tool call, otherwise end."""
+    last_message = state['messages'][-1]
+
+    if last_message.tool_calls:
+        return "tools"
+
+    return "end"
+
+def build_graph():
+    graph = StateGraph(AgentState)
+
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", tool_node)
+
+    graph.set_entry_point("agent")
+
+    graph.add_conditional_edges(
+        "agent",
+        should_continue,
+        {"tools": "tools", "end": END}
+    )
+
+    graph.add_edge("tools", "agent")
+
+    return graph.compile()
+
+agent_graph = build_graph()
+
+def run_agent(query: str) -> str:
+    """Run the agent with a user query and return the final answer."""
+    try:
+        result = agent_graph.invoke({
+            "messages": [HumanMessage(content=query)]
+        })
+        # last message is the agent's final text response
+        return result["messages"][-1].content
+    except Exception as e:
+        raise RuntimeError(f"Agent failed: {e}")
+
+if __name__ == "__main__":
+    answer = run_agent("What are the differences between RAG and fine-tuning?")
+    print(answer)

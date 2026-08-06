@@ -1,0 +1,15 @@
+arxiv
+langchain-text-splitters
+qdrant-client
+openai
+python-dotenv
+pydantic
+pydantic-settings
+rank_bm25
+sentence-transformers
+langgraph
+langchain
+langchain-openai
+ddgs
+fastapi
+uvicorn
