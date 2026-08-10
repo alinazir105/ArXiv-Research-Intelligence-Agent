@@ -12,7 +12,7 @@ def read_root():
 @app.post("/chat")
 async def call_agent(request: ChatRequest):
     try:
-        response = await run_in_threadpool(run_agent, request.query)
-        return {"answer": response}
+        result = await run_in_threadpool(run_agent, request.query)
+        return {"answer" : result["answer"]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -8,8 +8,13 @@ from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import ToolNode
 from app.core.config import settings
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
 import arxiv
+import os
+
+os.environ["LANGCHAIN_API_KEY"] = settings.LANGCHAIN_API_KEY
+os.environ["LANGCHAIN_TRACING_V2"] = settings.LANGCHAIN_TRACING_V2
+os.environ["LANGCHAIN_PROJECT"] = settings.LANGCHAIN_PROJECT
 
 class AgentState(TypedDict):
     messages : Annotated[list[BaseMessage], operator.add]
@@ -81,10 +86,15 @@ llm = ChatOpenAI(
 tools = [search_corpus, search_web, fetch_paper, summarize_papers]
 llm_with_tools = llm.bind_tools(tools)
 
+SYSTEM_MESSAGE = SystemMessage(content="""You are a research assistant with access to tools.
+Always use your tools to find information before answering.
+Base your answers ONLY on what your tools return — never answer from your own knowledge.
+If your tools don't return relevant information, say so clearly.""")
+
 # agent node — LLM thinks and decides: call a tool or answer
 def agent_node(state: AgentState) -> dict:
     """LLM reads message history and decides next action."""
-    response = llm_with_tools.invoke(state['messages'])
+    response = llm_with_tools.invoke([SYSTEM_MESSAGE] + state['messages'])
     return {'messages' : [response]}
 
 # tools node — executes whichever tool the agent called
@@ -125,8 +135,32 @@ def run_agent(query: str) -> str:
         result = agent_graph.invoke({
             "messages": [HumanMessage(content=query)]
         })
+
+        # find tool use message
+        tool_message = next((m for m in result['messages'] if hasattr(m, 'tool_calls') and m.tool_calls), None)
+
+        if tool_message is None:
+            return {
+                "answer": result["messages"][-1].content,
+                "tool_used": "none",
+                "context": ""
+            }
+
+        tool_used = tool_message.tool_calls[0]['name']
+
+        # find tool result message
+        tool_result = next(m for m in result['messages'] if isinstance(m, ToolMessage))
+        context = tool_result.content
+
         # last message is the agent's final text response
-        return result["messages"][-1].content
+        answer = result["messages"][-1].content
+
+        return {
+            "answer": answer,
+            "tool_used": tool_used,
+            "context": context
+        }
+
     except Exception as e:
         raise RuntimeError(f"Agent failed: {e}")
 

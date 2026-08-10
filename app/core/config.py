@@ -9,7 +9,10 @@ class Settings(BaseSettings):
     COLLECTION_NAME: str = "arxiv_papers"
     VECTOR_DIMENSION: int = 1536
     EMBEDDING_MODEL: str = "text-embedding-3-small"
-    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_MODEL: str = "gpt-4o-mini",
+    LANGCHAIN_API_KEY: str = ""
+    LANGCHAIN_TRACING_V2: str = "true"
+    LANGCHAIN_PROJECT: str = "arxiv-research-agent"
 
     # Bind the model to read automatically from your .env file
     model_config = SettingsConfigDict(env_file=".env")
