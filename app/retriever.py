@@ -1,24 +1,33 @@
 from app.core.config import settings
-from app.indexer import get_clients
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
+from openai import AsyncOpenAI
 from qdrant_client.models import Record
 from rank_bm25 import BM25Okapi
 import numpy as np
 from sentence_transformers import CrossEncoder
+import asyncio
 
 class HybridRetriever:
     
     def __init__(self):
-        openai_client, qdrant_client = get_clients()
+        self.openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        self.qdrant_client = AsyncQdrantClient(url=settings.QDRANT_URL)
+        self.cross_encoder = None
+        self.chunks = None
+        self.chunk_texts = None
+        self.bm25 = None
 
-        self.openai_client = openai_client
-        self.qdrant_client = qdrant_client
+
+    @classmethod
+    async def create(cls):
+        """Asynchronous factory method to create an instance of HybridRetriever."""
+        self = cls()
 
         # cross-encoder is loaded once at startup — loading it per query would add
         # several seconds of latency every time. It runs locally, no API cost.
-        self.cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        self.cross_encoder = await asyncio.to_thread(CrossEncoder, "cross-encoder/ms-marco-MiniLM-L-6-v2")
 
-        all_points = fetch_records_from_qdrant(qdrant_client)
+        all_points = await fetch_records_from_qdrant(self.qdrant_client)
 
         # store full payloads for metadata lookup during BM25 search —
         # BM25 works on indices, so we need the original chunks to map back to titles/urls
@@ -31,16 +40,18 @@ class HybridRetriever:
         # lowercase + split is enough tokenization for BM25 — it's keyword matching,
         # not semantic, so we just need consistent token boundaries.
         tokenized = [text.lower().split() for text in self.chunk_texts]
-        self.bm25 = BM25Okapi(tokenized)
+        self.bm25 = await asyncio.to_thread(BM25Okapi, tokenized)
 
-    def _bm25_search(self, query: str, k: int) -> list[dict]:
+        return self
+
+    async def _bm25_search(self, query: str, k: int) -> list[dict]:
         """Score all chunks with BM25, return top-k with index and score."""
         # tokenize the same way as the corpus — consistency is what matters,
         # not sophistication. mismatched tokenization would tank recall.
         tokenized_query = query.lower().split()
         
         # get_scores returns one float per chunk in the corpus — not ranked, just scored
-        scores = self.bm25.get_scores(tokenized_query)
+        scores = await asyncio.to_thread(self.bm25.get_scores, tokenized_query)
 
         # argsort gives ascending order, [::-1] reverses to descending,
         # [:k] takes the top k indices
@@ -60,7 +71,7 @@ class HybridRetriever:
 
         return top_chunks_with_metadata
 
-    def _rrf_fusion(self, dense_results, bm25_results, k: int) -> list[dict]:
+    async def _rrf_fusion(self, dense_results, bm25_results, k: int) -> list[dict]:
         """Combine dense and BM25 results using Reciprocal Rank Fusion."""
 
         # keyed by chunk text so the same chunk from both lists gets its scores accumulated,
@@ -106,7 +117,7 @@ class HybridRetriever:
             for text, data in sorted_results[:k]
         ]
     
-    def _rerank(self, query: str, results: list[dict], k: int) -> list[dict]:
+    async def _rerank(self, query: str, results: list[dict], k: int) -> list[dict]:
         """Score query-chunk pairs with cross-encoder, return top-k."""
 
         # cross-encoder sees query and chunk together in one pass —
@@ -114,7 +125,7 @@ class HybridRetriever:
         # this catches relevance signals that embedding comparison misses,
         # but it's too slow to run on the full corpus — only on top candidates.
         pairs = [[query, result["text"]] for result in results]
-        scores = self.cross_encoder.predict(pairs)
+        scores = await asyncio.to_thread(self.cross_encoder.predict, pairs)
 
         # attach scores back to results and sort
         for i, result in enumerate(results):
@@ -123,7 +134,7 @@ class HybridRetriever:
         sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
         return sorted_results[:k]
 
-    def _generate_hypothetical_document(self, query: str) -> str:
+    async def _generate_hypothetical_document(self, query: str) -> str:
         """Generate a fake academic abstract for the query using the LLM."""
         try:
             # HyDE: instead of embedding the user's casual query directly,
@@ -139,7 +150,7 @@ class HybridRetriever:
 
                 Query: {query}
             """
-            response = self.openai_client.chat.completions.create(
+            response = await self.openai_client.chat.completions.create(
                 model=settings.LLM_MODEL,
                 messages=[
                     {
@@ -156,7 +167,7 @@ class HybridRetriever:
             print(f"HyDE failed: {e}")
             raise
 
-    def _decompose_query(self, query: str) -> list[str]:
+    async def _decompose_query(self, query: str) -> list[str]:
         """Breaks the query down into focused sub-questions."""
         try:
             # a single query vector can't represent multiple intents simultaneously —
@@ -169,7 +180,7 @@ class HybridRetriever:
 
                 Query: {query}
             """
-            response = self.openai_client.chat.completions.create(
+            response = await self.openai_client.chat.completions.create(
                 model=settings.LLM_MODEL,
                 messages=[
                     {
@@ -195,33 +206,34 @@ class HybridRetriever:
             # fallback to original query so retrieval still works if decomposition fails
             return [query]
 
-    def retrieve(self, query: str, k: int = 5):
+    async def retrieve(self, query: str, k: int = 5):
         try:
             # 20 candidates per stage gives the cross-encoder enough to work with
             # without becoming slow. too few and the best chunk might not make it through.
             CANDIDATES = 20
             
-            sub_questions = self._decompose_query(query=query)
+            sub_questions = await self._decompose_query(query=query)
             
             all_results = []
 
             for sub_question in sub_questions:
                 # embed the hypothetical doc, not the raw sub-question —
                 # academic-style text lands closer to ArXiv abstracts in vector space
-                hypothetical_doc = self._generate_hypothetical_document(query=sub_question)
+                hypothetical_doc = await self._generate_hypothetical_document(query=sub_question)
 
-                response = self.openai_client.embeddings.create(
+                response = await self.openai_client.embeddings.create(
                     input=[hypothetical_doc],
                     model=settings.EMBEDDING_MODEL
                 )
 
                 sub_question_vector = response.data[0].embedding
 
-                raw_results = self.qdrant_client.query_points(
+                response = await self.qdrant_client.query_points(
                     collection_name=settings.COLLECTION_NAME,
                     query=sub_question_vector,
                     limit=CANDIDATES
-                ).points
+                )
+                raw_results = response.points
 
                 dense_search_results = [
                     {
@@ -233,9 +245,9 @@ class HybridRetriever:
                     for raw_result in raw_results
                 ]
 
-                bm25_search_results = self._bm25_search(query=sub_question, k=CANDIDATES)
+                bm25_search_results = await self._bm25_search(query=sub_question, k=CANDIDATES)
 
-                rrf_results = self._rrf_fusion(
+                rrf_results = await self._rrf_fusion(
                     dense_results=dense_search_results,
                     bm25_results=bm25_search_results,
                     k=20
@@ -256,7 +268,7 @@ class HybridRetriever:
             # rerank with the ORIGINAL query, not sub-questions —
             # the cross-encoder judges relevance to what the user actually asked,
             # not to the retrieval decomposition we used internally
-            reranked_results = self._rerank(query=query, results=unique_results, k=k)
+            reranked_results = await self._rerank(query=query, results=unique_results, k=k)
             return reranked_results
 
         except Exception as e:
@@ -264,7 +276,7 @@ class HybridRetriever:
             raise
 
 
-def fetch_records_from_qdrant(qdrant_client: QdrantClient) -> list[Record]:
+async def fetch_records_from_qdrant(qdrant_client: AsyncQdrantClient) -> list[Record]:
     """Fetch all points from Qdrant using pagination."""
     all_points = []
     offset = None
@@ -272,7 +284,7 @@ def fetch_records_from_qdrant(qdrant_client: QdrantClient) -> list[Record]:
     while True:
         # scroll paginates through the collection in pages of 100 —
         # fetching all points in one call would risk memory issues at scale
-        records, offset = qdrant_client.scroll(
+        response = await qdrant_client.scroll(
             collection_name=settings.COLLECTION_NAME,
             limit=100,
             offset=offset,
@@ -281,6 +293,7 @@ def fetch_records_from_qdrant(qdrant_client: QdrantClient) -> list[Record]:
             # for BM25 index and chunk lookup. skipping vectors saves memory.
             with_vectors=False,
         )
+        records, offset = response
         
         all_points.extend(records)
         

@@ -3,10 +3,12 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from app.agent import run_agent
-from openai import OpenAI
+from openai import AsyncOpenAI
 from app.core.config import settings
+from app.agent import initialize
+import asyncio
 
-client = OpenAI(api_key=settings.OPENAI_API_KEY)
+client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 # Test dataset — 7 corpus questions, 3 web questions
 TEST_CASES = [
@@ -52,7 +54,7 @@ TEST_CASES = [
     }
 ]
 
-def score_faithfulness(query: str, context: str, answer: str) -> float:
+async def score_faithfulness(query: str, context: str, answer: str) -> float:
     """Ask LLM to judge whether the answer is grounded in the context."""
 
     prompt = f"""You are an evaluation judge. Score the faithfulness of the answer below.
@@ -75,7 +77,7 @@ def score_faithfulness(query: str, context: str, answer: str) -> float:
     Respond with ONLY a number between 0.0 and 1.0. Nothing else."""
 
     
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
     )
@@ -85,7 +87,7 @@ def score_faithfulness(query: str, context: str, answer: str) -> float:
     except:
         return 0.0  # Return 0 if there's an error in parsing the score
 
-def score_relevancy(query: str, answer: str) -> float:
+async def score_relevancy(query: str, answer: str) -> float:
     """Ask LLM to judge whether the answer addresses the question."""
 
     prompt = f"""You are an evaluation judge. Score the relevancy of the answer below.
@@ -103,7 +105,8 @@ def score_relevancy(query: str, answer: str) -> float:
 
     Respond with ONLY a number between 0.0 and 1.0. Nothing else."""
 
-    response = client.chat.completions.create(
+    
+    response = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}]
     )
@@ -112,7 +115,8 @@ def score_relevancy(query: str, answer: str) -> float:
     except:
         return 0.0
 
-def evaluate():
+async def evaluate():
+    await initialize()  # Ensure the agent is initialized before evaluation
     results = []
     faithfulness_scores = []
     relevancy_scores = []
@@ -124,7 +128,7 @@ def evaluate():
         print(f"[{i+1}/{len(TEST_CASES)}] {test['query'][:60]}...")
 
         try:
-            result = run_agent(test["query"])
+            result = await run_agent(test["query"])
 
             # tool selection accuracy
             tool_correct_flag = result["tool_used"] == test["expected_tool"]
@@ -132,7 +136,7 @@ def evaluate():
                 tool_correct += 1
 
             # faithfulness — only meaningful for corpus queries
-            faith_score = score_faithfulness(
+            faith_score = await score_faithfulness(
                 query=test["query"],
                 context=result["context"],
                 answer=result["answer"]
@@ -140,7 +144,7 @@ def evaluate():
             faithfulness_scores.append(faith_score)
 
             # answer relevancy
-            rel_score = score_relevancy(
+            rel_score = await score_relevancy(
                 query=test["query"],
                 answer=result["answer"]
             )
@@ -165,4 +169,4 @@ def evaluate():
 
 
 if __name__ == "__main__":
-    evaluate()
+    asyncio.run(evaluate())

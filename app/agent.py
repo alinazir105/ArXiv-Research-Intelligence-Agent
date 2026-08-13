@@ -11,6 +11,7 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, ToolMessage, SystemMessage
 import arxiv
 import os
+import asyncio
 
 os.environ["LANGCHAIN_API_KEY"] = settings.LANGCHAIN_API_KEY
 os.environ["LANGCHAIN_TRACING_V2"] = settings.LANGCHAIN_TRACING_V2
@@ -20,15 +21,20 @@ class AgentState(TypedDict):
     messages : Annotated[list[BaseMessage], operator.add]
 
 
-retriever = HybridRetriever()
+retriever = None
 web_search = DDGS()
+
+async def initialize():
+    """Initialize async resources — called once at application startup."""
+    global retriever
+    retriever = await HybridRetriever.create()
 
 # The docstring are necessary for tool nodes as the LLm reads them to decide when to use each tool
 @tool
-def search_corpus(query: str) -> str:
+async def search_corpus(query: str) -> str:
     """Search the ArXiv research paper corpus for AI/ML research concepts."""
     try:
-        results = retriever.retrieve(query=query)
+        results = await retriever.retrieve(query=query)
         return "\n\n".join([
             f"Title: {r['title']}\n{r['text']}"
             for r in results
@@ -37,39 +43,41 @@ def search_corpus(query: str) -> str:
         return f"Corpus search failed: {e}"
 
 @tool
-def search_web(query: str) -> str:
+async def search_web(query: str) -> str:
     """Search the web for current information not in the research corpus."""
     try:
-        results = web_search.text(query, max_results=5)
+        results = await asyncio.to_thread(web_search.text, query, max_results=5)
         return "\n\n".join([r["body"] for r in results])
     except Exception as e:
         return f"Web search failed: {e}"
 
 @tool
-def fetch_paper(url: str) -> str:
+async def fetch_paper(url: str) -> str:
     """Fetch full details of a specific ArXiv paper when you have its URL.
     Use this when you need more detail about a paper already identified
     through search. Do not use for general topic searches — use 
     search_corpus instead."""
     try:
-        paper_id = url.split("/")[-1]
-        client = arxiv.Client()
-        search = arxiv.Search(id_list=[paper_id])
-        paper = next(client.results(search))
+        def _fetch():
+            paper_id = url.split("/")[-1]
+            client = arxiv.Client()
+            search = arxiv.Search(id_list=[paper_id])
+            return next(client.results(search))
 
+        paper = await asyncio.to_thread(_fetch)
         return f"Title: {paper.title}\n\nAuthors: {', '.join([a.name for a in paper.authors])}\n\nAbstract: {paper.summary}\n\nURL: {paper.entry_id}"
     except Exception as e:
         return f"Paper fetch failed: {e}"
 
 
 @tool
-def summarize_papers(query: str) -> str:
+async def summarize_papers(query: str) -> str:
     """Retrieve and summarize papers on a topic from the ArXiv corpus.
     Use this when the user asks to summarize, compare, or get an overview 
     of papers on a specific topic. Not for fetching a specific paper by URL 
     — use fetch_paper for that."""
     try:
-        results = retriever.retrieve(query=query, k=5)
+        results = await retriever.retrieve(query=query, k=5)
         summaries = []
         for r in results:
             summaries.append(f"Title: {r['title']}\nSummary: {r['text']}")
@@ -92,9 +100,9 @@ Base your answers ONLY on what your tools return — never answer from your own 
 If your tools don't return relevant information, say so clearly.""")
 
 # agent node — LLM thinks and decides: call a tool or answer
-def agent_node(state: AgentState) -> dict:
+async def agent_node(state: AgentState) -> dict:
     """LLM reads message history and decides next action."""
-    response = llm_with_tools.invoke([SYSTEM_MESSAGE] + state['messages'])
+    response = await llm_with_tools.ainvoke([SYSTEM_MESSAGE] + state['messages'])
     return {'messages' : [response]}
 
 # tools node — executes whichever tool the agent called
@@ -129,10 +137,10 @@ def build_graph():
 
 agent_graph = build_graph()
 
-def run_agent(query: str) -> str:
+async def run_agent(query: str) -> dict:
     """Run the agent with a user query and return the final answer."""
     try:
-        result = agent_graph.invoke({
+        result = await agent_graph.ainvoke({
             "messages": [HumanMessage(content=query)]
         })
 
@@ -165,5 +173,6 @@ def run_agent(query: str) -> str:
         raise RuntimeError(f"Agent failed: {e}")
 
 if __name__ == "__main__":
-    answer = run_agent("What are the differences between RAG and fine-tuning?")
+    asyncio.run(initialize())
+    answer = asyncio.run(run_agent("What are the differences between RAG and fine-tuning?"))
     print(answer)
