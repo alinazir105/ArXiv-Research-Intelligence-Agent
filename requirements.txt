@@ -13,3 +13,11 @@ langchain-openai
 ddgs
 fastapi
 uvicorn
+transformers 
+peft 
+trl 
+datasets 
+accelerate 
+bitsandbytes 
+torch 
+torchvision
