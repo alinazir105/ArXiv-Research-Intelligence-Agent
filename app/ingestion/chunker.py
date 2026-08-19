@@ -1,5 +1,5 @@
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from ingest import fetch_papers
+from app.ingestion.ingest import fetch_papers
 
 def chunk_papers(papers: list[dict]) -> list[dict]:
     # Breakdown the abstracts from the papers into chunks, and store them into a list, 

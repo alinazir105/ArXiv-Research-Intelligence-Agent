@@ -1,6 +1,6 @@
-from ingest import fetch_papers
-from chunker import chunk_papers
-from indexer import index_papers
+from app.ingestion.ingest import fetch_papers
+from app.ingestion.chunker import chunk_papers
+from app.ingestion.indexer import index_papers
 import time
 
 def run_pipeline(query: str, max_results: int):

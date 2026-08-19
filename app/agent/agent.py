@@ -2,7 +2,7 @@ from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage
 import operator
 from langchain_core.tools import tool
-from app.retriever import HybridRetriever
+from app.retrieval.retriever import HybridRetriever
 from ddgs import DDGS
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import ToolNode

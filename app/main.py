@@ -6,7 +6,7 @@ from openai import AsyncOpenAI
 from app.core.config import settings
 import json
 from contextlib import asynccontextmanager
-from app.agent import initialize, run_agent
+from app.agent.agent import initialize, run_agent
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
