@@ -21,3 +21,4 @@ accelerate
 bitsandbytes 
 torch 
 torchvision
+pymupdf
