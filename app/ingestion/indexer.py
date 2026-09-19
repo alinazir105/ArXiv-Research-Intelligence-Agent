@@ -4,6 +4,9 @@ from openai import OpenAI
 import uuid
 from app.core.config import settings
 import hashlib
+from app.core.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 def get_clients():
     # Fetch the OpenAI and Qdrant clients
@@ -43,6 +46,7 @@ def index_papers(chunks: list[dict]):
         # Extract the chunk texts into a list
         text_to_embed = [chunk["text"] for chunk in chunks]
 
+        logger.info(f"Embedding {len(chunks)} chunks")
         # Call the Open AI api to convert text to embeddings
         response = openai_client.embeddings.create(
             input=text_to_embed,
@@ -60,10 +64,11 @@ def index_papers(chunks: list[dict]):
                     payload={
                         "text": chunk['text'],
                         "title": chunk['title'],
-                        "authors": chunk['authors'],
-                        "published": chunk['published'],
-                        "url": chunk['url'],
-                        "categories": chunk['categories']
+                        "authors": chunk.get('authors', []),
+                        "published": chunk.get('published', ''),
+                        "url": chunk.get('url', ''),
+                        "categories": chunk.get('categories', []),
+                        "source_type": chunk.get('source_type', 'abstract')
                     }
                 )
             for i, chunk in enumerate(chunks)
@@ -76,7 +81,9 @@ def index_papers(chunks: list[dict]):
             points=points
         )
 
+        logger.info(f"Successfully indexed {len(chunks)} chunks into {settings.COLLECTION_NAME}")
+
     except Exception as e:
-        print(f"Indexing failed: {e}")
+        logger.error(f"Indexing failed: {e}", exc_info=True)
         raise
 

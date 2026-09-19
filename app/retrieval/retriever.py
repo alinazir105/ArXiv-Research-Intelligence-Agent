@@ -6,6 +6,9 @@ from rank_bm25 import BM25Okapi
 import numpy as np
 from sentence_transformers import CrossEncoder
 import asyncio
+from app.core.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 class HybridRetriever:
     
@@ -25,8 +28,10 @@ class HybridRetriever:
 
         # cross-encoder is loaded once at startup — loading it per query would add
         # several seconds of latency every time. It runs locally, no API cost.
+        logger.info("Loading cross-encoder model...")
         self.cross_encoder = await asyncio.to_thread(CrossEncoder, "cross-encoder/ms-marco-MiniLM-L-6-v2")
 
+        logger.info(f"Fetching all chunks from Qdrant...")
         all_points = await fetch_records_from_qdrant(self.qdrant_client)
 
         # store full payloads for metadata lookup during BM25 search —
@@ -34,6 +39,7 @@ class HybridRetriever:
         self.chunks = [point.payload for point in all_points]
         self.chunk_texts = [point.payload["text"] for point in all_points]
 
+        logger.info(f"Loaded {len(all_points)} chunks, building BM25 index...")
         # BM25 index is built once at startup from all chunks in the corpus.
         # rebuilding it on every query would require fetching all points from Qdrant
         # and reprocessing them — unacceptable latency at query time.
@@ -41,6 +47,7 @@ class HybridRetriever:
         # not semantic, so we just need consistent token boundaries.
         tokenized = [text.lower().split() for text in self.chunk_texts]
         self.bm25 = await asyncio.to_thread(BM25Okapi, tokenized)
+        logger.info("HybridRetriever ready.")
 
         return self
 
@@ -164,7 +171,7 @@ class HybridRetriever:
             return hypothetical_doc
 
         except Exception as e:
-            print(f"HyDE failed: {e}")
+            logger.error(f"HyDE failed: {e}", exc_info=True)
             raise
 
     async def _decompose_query(self, query: str) -> list[str]:
@@ -202,7 +209,7 @@ class HybridRetriever:
             return sub_questions
 
         except Exception as e:
-            print(f"Query Decomposition failed: {e}")
+            logger.error(f"Query Decomposition failed: {e}", exc_info=True)
             # fallback to original query so retrieval still works if decomposition fails
             return [query]
 
@@ -213,6 +220,7 @@ class HybridRetriever:
             CANDIDATES = 20
             
             sub_questions = await self._decompose_query(query=query)
+            logger.debug(f"Decomposed into {len(sub_questions)} sub-questions")
             
             all_results = []
 
@@ -269,10 +277,11 @@ class HybridRetriever:
             # the cross-encoder judges relevance to what the user actually asked,
             # not to the retrieval decomposition we used internally
             reranked_results = await self._rerank(query=query, results=unique_results, k=k)
+            logger.info(f"Retrieved {len(reranked_results)} results for query: '{query[:50]}'")
             return reranked_results
 
         except Exception as e:
-            print(f"Retrieval failed: {e}")
+            logger.error(f"Retrieval failed: {e}", exc_info=True)
             raise
 
 
@@ -296,9 +305,12 @@ async def fetch_records_from_qdrant(qdrant_client: AsyncQdrantClient) -> list[Re
         records, offset = response
         
         all_points.extend(records)
+
+        logger.debug(f"Fetched page, total so far: {len(all_points)}")
         
         # offset is None when Qdrant has no more pages to return
         if offset is None:
             break
 
+    logger.info(f"Fetched {len(all_points)} total points from Qdrant")
     return all_points

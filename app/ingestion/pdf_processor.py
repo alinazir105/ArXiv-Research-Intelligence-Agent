@@ -1,10 +1,8 @@
 import requests
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.core.config import settings
-from openai import OpenAI
 
-openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
 def download_pdf(url: str) -> bytes:
     """
@@ -80,7 +78,7 @@ def chunk_and_contextualize(text: str, title: str, openai_client) -> list[dict]:
     for chunk in chunks:
         # generate context for this specific chunk
         response = openai_client.chat.completions.create(
-            model="gpt-4o",
+            model=settings.LLM_MODEL,
             messages=[
                 {
                     "role": "system", 
@@ -107,7 +105,10 @@ def chunk_and_contextualize(text: str, title: str, openai_client) -> list[dict]:
         result.append({
             "text": contextual_text,
             "title": title,
-            "source_type": "full_paper"
+            "source_type": "full_paper",
+            "url": "",      # will be filled by the caller
+            "authors": [],  # will be filled by the caller
+            "published": "" # will be filled by the caller
         })
 
     return result

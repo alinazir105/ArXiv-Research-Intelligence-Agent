@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     # Define fields with type annotations
     OPENAI_API_KEY: str
     QDRANT_URL: str = "http://localhost:6333"
+    REDIS_URL : str = "redis://localhost:6379"
     COLLECTION_NAME: str = "arxiv_papers"
     VECTOR_DIMENSION: int = 1536
     EMBEDDING_MODEL: str = "text-embedding-3-small"
