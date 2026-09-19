@@ -2,10 +2,9 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.agent import run_agent
 from openai import AsyncOpenAI
 from app.core.config import settings
-from app.agent import initialize
+from app.agent.agent import run_agent, initialize
 import asyncio
 
 client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
